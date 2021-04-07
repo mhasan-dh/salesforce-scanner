@@ -1,0 +1,1 @@
+Please note that this is a cleaned up version of https://github.com/moniik/poc_salesforce_lightning 
